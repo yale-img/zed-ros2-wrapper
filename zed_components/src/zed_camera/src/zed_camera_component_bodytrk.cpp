@@ -485,6 +485,14 @@ void ZedCamera::processBodies(rclcpp::Time t)
       memcpy(
         &(bodyMsg->objects[idx].skeleton_3d.keypoints[0]),
         &(body.keypoint[0]), 3 * kp_size * sizeof(float));
+
+      memcpy(
+        &(bodyMsg->objects[idx].skeleton_3d.orientations[0]),
+        &(body.local_orientation_per_joint[0]), 4 * kp_size * sizeof(float));
+
+      memcpy(
+        &(bodyMsg->objects[idx].skeleton_3d.root_orientation),
+        &(body.global_root_orientation[0]), 4 * sizeof(float));
     }
 
     // ----------------------------------
