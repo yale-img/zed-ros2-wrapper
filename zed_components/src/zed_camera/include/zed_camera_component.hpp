@@ -57,6 +57,7 @@ protected:
   void getOdParams();
   void getCustomOdParams();
   void getBodyTrkParams();
+  void getBodyTrkFusionParams();
   void getStreamingServerParams();
   void getAdvancedParams();
 
@@ -542,6 +543,8 @@ private:
   double mBodyTrkPredTimeout = 0.5;
   double mBodyTrkConfThresh = 50.0;
   int mBodyTrkMinKp = 10;
+
+  bool mBodyTrkFusionEnabled = false;
 
   double mPdMaxDistanceThreshold = 0.15;
   double mPdNormalSimilarityThreshold = 15.0;

@@ -536,6 +536,13 @@ void ZedCamera::initParameters()
     mBodyTrkEnabled = false;
   }
 
+  // Body Tracking Fusion Parameters
+  if (!mDepthDisabled) {
+    getBodyTrkFusionParams();
+  } else {
+    mBodyTrkFusionEnabled = false;
+  }
+
   getStreamingServerParams();
 
   getAdvancedParams();
@@ -1237,6 +1244,21 @@ void ZedCamera::getMappingParams()
     "mapping.pd_normal_similarity_threshold",
     mPdNormalSimilarityThreshold, mPdNormalSimilarityThreshold,
     " * Plane Det. Normals Sim. Thresh.: ", false, -180.0, 180.0);
+}
+
+void ZedCamera::getBodyTrkFusionParams()
+{
+  rclcpp::Parameter paramVal;
+
+  rcl_interfaces::msg::ParameterDescriptor read_only_descriptor;
+  read_only_descriptor.read_only = true;
+
+  RCLCPP_INFO(get_logger(), "=== Body Tracking Fusion parameters ===");
+
+  sl_tools::getParam(
+    shared_from_this(), "fusion.body_tracking_enabled",
+    mBodyTrkFusionEnabled, mBodyTrkFusionEnabled,
+    " * Body Tracking Fusion Enabled: ");
 }
 
 void ZedCamera::getPosTrackingParams()
@@ -3333,6 +3355,15 @@ bool ZedCamera::startCamera()
     DEBUG_GNSS(" Fusion subscribing OK");
     DEBUG_GNSS("Fusion module ready");
     // <---- Initialize Fusion module
+  }
+
+  if (mBodyTrkFusionEnabled) {
+    mFusionConfig = std::make_shared<sl::FusionConfiguration>();
+
+    mFusionConfig->input_type.setFromSerialNumber(mCamSerialNumber);
+    mFusionConfig->communication_parameters.setForSharedMemory();
+    // Enable camera publishing to Fusion
+    mZed->startPublishing(mFusionConfig->communication_parameters);
   }
 
   // Init and start threads
