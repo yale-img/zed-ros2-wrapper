@@ -543,6 +543,9 @@ void ZedCamera::initParameters()
     mBodyTrkFusionEnabled = false;
   }
 
+  if (mBodyTrkEnabled && !(mBodyTrkFusionEnabled))
+    mBodyTrkPubEnabled = true;
+
   getStreamingServerParams();
 
   getAdvancedParams();
@@ -4751,7 +4754,7 @@ void ZedCamera::threadFunc_zedGrab()
         mObjDetMutex.unlock();
 
         mBodyTrkMutex.lock();
-        if (mBodyTrkRunning) {
+        if (mBodyTrkRunning && mBodyTrkPubEnabled) {
           processBodies(mFrameTimestamp);
         }
         mBodyTrkMutex.unlock();

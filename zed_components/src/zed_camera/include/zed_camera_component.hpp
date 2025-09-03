@@ -545,6 +545,7 @@ private:
   int mBodyTrkMinKp = 10;
 
   bool mBodyTrkFusionEnabled = false;
+  bool mBodyTrkPubEnabled = false;
 
   double mPdMaxDistanceThreshold = 0.15;
   double mPdNormalSimilarityThreshold = 15.0;

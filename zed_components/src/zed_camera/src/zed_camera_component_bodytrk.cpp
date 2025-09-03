@@ -306,7 +306,7 @@ bool ZedCamera::startBodyTracking()
 
   DEBUG_BT("Body Tracking enabled");
 
-  if (!mPubBodyTrk) {
+  if (!mPubBodyTrk && mBodyTrkPubEnabled) {
     mPubBodyTrk = create_publisher<zed_msgs::msg::ObjectsStamped>(
       mBodyTrkTopic, mQos, mPubOpt);
     RCLCPP_INFO_STREAM(
@@ -337,18 +337,21 @@ void ZedCamera::stopBodyTracking()
 
     objMsg->objects.clear();
 
-    DEBUG_STREAM_OD(
-      "Publishing EMPTY OBJ message "
-        << mPubBodyTrk->get_topic_name());
-    try {
-      mPubBodyTrk->publish(std::move(objMsg));
-    } catch (std::system_error & e) {
-      DEBUG_STREAM_COMM("Message publishing ecception: " << e.what());
-    } catch (...) {
-      DEBUG_STREAM_COMM("Message publishing generic ecception: ");
+    if (mPubBodyTrk)
+    {
+      DEBUG_STREAM_OD(
+        "Publishing EMPTY OBJ message "
+          << mPubBodyTrk->get_topic_name());
+      try {
+        mPubBodyTrk->publish(std::move(objMsg));
+      } catch (std::system_error & e) {
+        DEBUG_STREAM_COMM("Message publishing ecception: " << e.what());
+      } catch (...) {
+        DEBUG_STREAM_COMM("Message publishing generic ecception: ");
+      }
+      // <---- Send an empty message to indicate that no more objects are tracked
+      // (e.g clean RVIZ2)
     }
-    // <---- Send an empty message to indicate that no more objects are tracked
-    // (e.g clean RVIZ2)
   }
 }
 
