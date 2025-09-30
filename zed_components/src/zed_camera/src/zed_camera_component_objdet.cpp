@@ -986,7 +986,7 @@ void ZedCamera::stopObjDetect()
     // (e.g clean RVIZ2)
     auto objMsg = std::make_unique<zed_msgs::msg::ObjectsStamped>();
 
-    objMsg->header.stamp = mFrameTimestamp;
+    objMsg->header.stamp = mUsePubTimestamps ? get_clock()->now() : mFrameTimestamp;
     objMsg->header.frame_id = mLeftCamFrameId;
 
     objMsg->objects.clear();
@@ -997,9 +997,9 @@ void ZedCamera::stopObjDetect()
     try {
       mPubObjDet->publish(std::move(objMsg));
     } catch (std::system_error & e) {
-      DEBUG_STREAM_COMM("Message publishing ecception: " << e.what() );
+      DEBUG_STREAM_COMM("Message publishing exception: " << e.what() );
     } catch (...) {
-      DEBUG_STREAM_COMM("Message publishing generic ecception: ");
+      DEBUG_STREAM_COMM("Message publishing generic exception: ");
     }
     // <---- Send an empty message to indicate that no more objects are tracked
     // (e.g clean RVIZ2)
@@ -1106,7 +1106,7 @@ void ZedCamera::processDetectedObjects(rclcpp::Time t)
 
   auto objMsg = std::make_unique<zed_msgs::msg::ObjectsStamped>();
 
-  objMsg->header.stamp = t;
+  objMsg->header.stamp = mUsePubTimestamps ? get_clock()->now() : t;
   objMsg->header.frame_id = mLeftCamFrameId;
 
   objMsg->objects.resize(objCount);
@@ -1184,9 +1184,9 @@ void ZedCamera::processDetectedObjects(rclcpp::Time t)
   try {
     mPubObjDet->publish(std::move(objMsg));
   } catch (std::system_error & e) {
-    DEBUG_STREAM_COMM("Message publishing ecception: " << e.what());
+    DEBUG_STREAM_COMM("Message publishing exception: " << e.what());
   } catch (...) {
-    DEBUG_STREAM_COMM("Message publishing generic ecception: ");
+    DEBUG_STREAM_COMM("Message publishing generic exception: ");
   }
 
   // ----> Diagnostic information update

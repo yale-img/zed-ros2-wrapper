@@ -1,4 +1,4 @@
-// Copyright 2024 Stereolabs
+// Copyright 2025 Stereolabs
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -69,9 +69,8 @@ protected:
 
   // ----> Utility functions
   void fillCamInfo(
-    const std::shared_ptr<sensor_msgs::msg::CameraInfo> & camInfoMsg,
-    const std::string & frameId,
-    bool rawParam = false);
+    sensor_msgs::msg::CameraInfo::SharedPtr camInfoMsg,
+    const std::string & frameId, bool rawParam = false);
 
   void applyDynamicSettings();
   bool areImageTopicsSubscribed();
@@ -81,7 +80,8 @@ protected:
   void publishImageWithInfo(
     const sl::Mat & img,
     const image_transport::CameraPublisher & pubImg,
-    const camInfoMsgPtr & camInfoMsg, const std::string & imgFrameId,
+    camInfoMsgPtr & camInfoMsg,
+    const std::string & imgFrameId,
     const rclcpp::Time & t);
   bool publishSensorsData();
   void publishImuFrameAndTopic();

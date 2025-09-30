@@ -103,6 +103,9 @@ ZedCamera::ZedCamera(const rclcpp::NodeOptions & options)
   RCLCPP_INFO(get_logger(), "================================");
   RCLCPP_INFO(get_logger(), " * namespace: %s", get_namespace());
   RCLCPP_INFO(get_logger(), " * node name: %s", get_name());
+  RCLCPP_INFO(
+    get_logger(), " * IPC: %s",
+    options.use_intra_process_comms() ? "enabled" : "disabled");
   RCLCPP_INFO(get_logger(), "================================");
 
   const size_t SDK_MAJOR_REQ = 4;
@@ -627,6 +630,10 @@ void ZedCamera::getDebugParams()
     shared_from_this(), "debug.sdk_verbose", mVerbose,
     mVerbose, " * SDK Verbose: ", false, 0, 9999);
   sl_tools::getParam(
+    shared_from_this(), "debug.use_pub_timestamps",
+    mUsePubTimestamps, mUsePubTimestamps,
+    " * Use Pub Timestamps: ");
+  sl_tools::getParam(
     shared_from_this(), "debug.sdk_verbose_log_file",
     mVerboseLogFile, mVerboseLogFile, " * SDK Verbose File: ");
   sl_tools::getParam(
@@ -646,7 +653,7 @@ void ZedCamera::getDebugParams()
   sl_tools::getParam(
     shared_from_this(), "debug.debug_point_cloud",
     _debugPointCloud, _debugPointCloud,
-    " * Debug Point Cloud: %s");
+    " * Debug Point Cloud: ");
   sl_tools::getParam(
     shared_from_this(), "debug.debug_gnss", _debugGnss,
     _debugGnss, " * Debug GNSS: ");
@@ -674,13 +681,16 @@ void ZedCamera::getDebugParams()
     shared_from_this(), "debug.debug_roi", _debugRoi,
     _debugRoi, " * Debug ROI: ");
   sl_tools::getParam(
+    shared_from_this(), "debug.debug_nitros", _debugNitros,
+    _debugNitros, " * Debug Nitros: ");
+  sl_tools::getParam(
     shared_from_this(), "debug.debug_advanced", _debugAdvanced,
     _debugAdvanced, " * Debug Advanced: ");
 
   mDebugMode = _debugCommon || _debugSim || _debugVideoDepth || _debugCamCtrl ||
     _debugPointCloud || _debugPosTracking || _debugGnss ||
     _debugSensors || _debugMapping || _debugObjectDet ||
-    _debugBodyTrk || _debugAdvanced || _debugRoi || _debugStreaming;
+    _debugBodyTrk || _debugAdvanced || _debugRoi || _debugStreaming || _debugNitros;
 
   if (mDebugMode) {
     rcutils_ret_t res = rcutils_logging_set_logger_level(
@@ -703,6 +713,20 @@ void ZedCamera::getDebugParams()
   DEBUG_STREAM_COMM(
     "[ROS2] Using RMW_IMPLEMENTATION "
       << rmw_get_implementation_identifier());
+
+#ifdef FOUND_ISAAC_ROS_NITROS
+  sl_tools::getParam(
+    shared_from_this(), "debug.disable_nitros",
+    _nitrosDisabled, _nitrosDisabled);
+
+  if (_nitrosDisabled) {
+    RCLCPP_WARN(
+      get_logger(),
+      "NITROS is available, but is disabled by 'debug.disable_nitros'");
+  }
+#else
+  _nitrosDisabled = true;  // Force disable NITROS if not available
+#endif
 }
 
 void ZedCamera::getSimParams()
@@ -1836,15 +1860,6 @@ void ZedCamera::setTFCoordFrameNames()
   mDepthOptFrameId = mLeftCamOptFrameId;
   mPointCloudFrameId = mDepthFrameId;
 
-  // Note: Depth image frame id must match color image frame id
-  mCloudFrameId = mDepthOptFrameId;
-  mRgbFrameId = mDepthFrameId;
-  mRgbOptFrameId = mDepthOptFrameId;
-  mDisparityFrameId = mDepthFrameId;
-  mDisparityOptFrameId = mDepthOptFrameId;
-  mConfidenceFrameId = mDepthFrameId;
-  mConfidenceOptFrameId = mDepthOptFrameId;
-
   // Print TF frames
   RCLCPP_INFO_STREAM(get_logger(), "=== TF FRAMES ===");
   RCLCPP_INFO_STREAM(get_logger(), " * Map\t\t\t-> " << mMapFrameId);
@@ -1855,8 +1870,6 @@ void ZedCamera::setTFCoordFrameNames()
   RCLCPP_INFO_STREAM(
     get_logger(),
     " * Left Optical\t\t-> " << mLeftCamOptFrameId);
-  RCLCPP_INFO_STREAM(get_logger(), " * RGB\t\t\t-> " << mRgbFrameId);
-  RCLCPP_INFO_STREAM(get_logger(), " * RGB Optical\t\t-> " << mRgbOptFrameId);
   RCLCPP_INFO_STREAM(get_logger(), " * Right\t\t\t-> " << mRightCamFrameId);
   RCLCPP_INFO_STREAM(
     get_logger(),
@@ -1866,19 +1879,7 @@ void ZedCamera::setTFCoordFrameNames()
     RCLCPP_INFO_STREAM(
       get_logger(),
       " * Depth Optical\t\t-> " << mDepthOptFrameId);
-    RCLCPP_INFO_STREAM(get_logger(), " * Point Cloud\t\t-> " << mCloudFrameId);
-    RCLCPP_INFO_STREAM(
-      get_logger(),
-      " * Disparity\t\t-> " << mDisparityFrameId);
-    RCLCPP_INFO_STREAM(
-      get_logger(),
-      " * Disparity Optical\t-> " << mDisparityOptFrameId);
-    RCLCPP_INFO_STREAM(
-      get_logger(),
-      " * Confidence\t\t-> " << mConfidenceFrameId);
-    RCLCPP_INFO_STREAM(
-      get_logger(),
-      " * Confidence Optical\t-> " << mConfidenceOptFrameId);
+    RCLCPP_INFO_STREAM(get_logger(), " * Point Cloud\t\t-> " << mPointCloudFrameId);
   }
 
   if (!sl_tools::isZED(mCamRealModel)) {
@@ -1903,54 +1904,6 @@ void ZedCamera::initPublishers()
   RCLCPP_INFO(get_logger(), "=== PUBLISHED TOPICS ===");
 
   // ----> Topics names definition
-  std::string rgbTopicRoot = "rgb";
-  std::string rightTopicRoot = "right";
-  std::string leftTopicRoot = "left";
-  std::string stereoTopicRoot = "stereo";
-  std::string img_topic = "/image_rect_color";
-  std::string img_raw_topic = "/image_raw_color";
-  std::string img_gray_topic = "_gray/image_rect_gray";
-  std::string img_raw_gray_topic_ = "_gray/image_raw_gray";
-  std::string raw_suffix = "_raw";
-  std::string left_topic = mTopicRoot + leftTopicRoot + img_topic;
-  std::string left_raw_topic =
-    mTopicRoot + leftTopicRoot + raw_suffix + img_raw_topic;
-  std::string right_topic = mTopicRoot + rightTopicRoot + img_topic;
-  std::string right_raw_topic =
-    mTopicRoot + rightTopicRoot + raw_suffix + img_raw_topic;
-  std::string rgb_topic = mTopicRoot + rgbTopicRoot + img_topic;
-  std::string rgb_raw_topic =
-    mTopicRoot + rgbTopicRoot + raw_suffix + img_raw_topic;
-  std::string stereo_topic = mTopicRoot + stereoTopicRoot + img_topic;
-  std::string stereo_raw_topic =
-    mTopicRoot + stereoTopicRoot + raw_suffix + img_raw_topic;
-  std::string left_gray_topic = mTopicRoot + leftTopicRoot + img_gray_topic;
-  std::string left_raw_gray_topic =
-    mTopicRoot + leftTopicRoot + raw_suffix + img_raw_gray_topic_;
-  std::string right_gray_topic = mTopicRoot + rightTopicRoot + img_gray_topic;
-  std::string right_raw_gray_topic =
-    mTopicRoot + rightTopicRoot + raw_suffix + img_raw_gray_topic_;
-  std::string rgb_gray_topic = mTopicRoot + rgbTopicRoot + img_gray_topic;
-  std::string rgb_raw_gray_topic =
-    mTopicRoot + rgbTopicRoot + raw_suffix + img_raw_gray_topic_;
-
-  // Set the disparity topic name
-  std::string disparity_topic = mTopicRoot + "disparity/disparity_image";
-
-  // Set the depth topic names
-  std::string depth_topic_root = "depth";
-
-  if (mOpenniDepthMode) {
-    RCLCPP_INFO_STREAM(
-      get_logger(),
-      "Openni depth mode activated -> Units: mm, Encoding: MONO16");
-  }
-  std::string depth_topic = mTopicRoot + depth_topic_root + "/depth_registered";
-  std::string depth_info_topic = mTopicRoot + depth_topic_root + "/depth_info";
-
-  mRoiMaskTopic = mTopicRoot + "roi_mask";
-
-  std::string pointcloud_topic = mTopicRoot + "point_cloud/cloud_registered";
   mPointcloudFusedTopic = mTopicRoot + "mapping/fused_cloud";
 
   std::string object_det_topic_root = "obj_det";
@@ -1958,11 +1911,6 @@ void ZedCamera::initPublishers()
 
   std::string body_trk_topic_root = "body_trk";
   mBodyTrkTopic = mTopicRoot + body_trk_topic_root + "/skeletons";
-
-  std::string confImgRoot = "confidence";
-  std::string conf_map_topic_name = "confidence_map";
-  std::string conf_map_topic =
-    mTopicRoot + confImgRoot + "/" + conf_map_topic_name;
 
   // Set the positional tracking topic names
   mPoseTopic = mTopicRoot + "pose";
@@ -2046,168 +1994,9 @@ void ZedCamera::initPublishers()
     "Advertised on topic: " << mPubHeartbeatStatus->get_topic_name());
   // <---- Heartbeat Status publisher
 
-  // ----> Camera publishers
-  mPubRgb = image_transport::create_camera_publisher(
-    this, rgb_topic, mQos.get_rmw_qos_profile());
-  RCLCPP_INFO_STREAM(
-    get_logger(),
-    "Advertised on topic: " << mPubRgb.getTopic());
-  RCLCPP_INFO_STREAM(
-    get_logger(),
-    "Advertised on topic: " << mPubRgb.getInfoTopic());
-  mPubRgbGray = image_transport::create_camera_publisher(
-    this, rgb_gray_topic, mQos.get_rmw_qos_profile());
-  RCLCPP_INFO_STREAM(
-    get_logger(),
-    "Advertised on topic: " << mPubRgbGray.getTopic());
-  RCLCPP_INFO_STREAM(
-    get_logger(),
-    "Advertised on topic: " << mPubRgbGray.getInfoTopic());
-  mPubRawRgb = image_transport::create_camera_publisher(
-    this, rgb_raw_topic, mQos.get_rmw_qos_profile());
-  RCLCPP_INFO_STREAM(
-    get_logger(),
-    "Advertised on topic: " << mPubRawRgb.getTopic());
-  RCLCPP_INFO_STREAM(
-    get_logger(),
-    "Advertised on topic: " << mPubRawRgb.getInfoTopic());
-  mPubRawRgbGray = image_transport::create_camera_publisher(
-    this, rgb_raw_gray_topic, mQos.get_rmw_qos_profile());
-  RCLCPP_INFO_STREAM(
-    get_logger(),
-    "Advertised on topic: " << mPubRawRgbGray.getTopic());
-  RCLCPP_INFO_STREAM(
-    get_logger(),
-    "Advertised on topic: " << mPubRawRgbGray.getInfoTopic());
-  mPubLeft = image_transport::create_camera_publisher(
-    this, left_topic, mQos.get_rmw_qos_profile());
-  RCLCPP_INFO_STREAM(
-    get_logger(),
-    "Advertised on topic: " << mPubLeft.getTopic());
-  RCLCPP_INFO_STREAM(
-    get_logger(),
-    "Advertised on topic: " << mPubLeft.getInfoTopic());
-  mPubLeftGray = image_transport::create_camera_publisher(
-    this, left_gray_topic, mQos.get_rmw_qos_profile());
-  RCLCPP_INFO_STREAM(
-    get_logger(),
-    "Advertised on topic: " << mPubLeftGray.getTopic());
-  RCLCPP_INFO_STREAM(
-    get_logger(),
-    "Advertised on topic: " << mPubLeftGray.getInfoTopic());
-  mPubRawLeft = image_transport::create_camera_publisher(
-    this, left_raw_topic, mQos.get_rmw_qos_profile());
-  RCLCPP_INFO_STREAM(
-    get_logger(),
-    "Advertised on topic: " << mPubRawLeft.getTopic());
-  RCLCPP_INFO_STREAM(
-    get_logger(),
-    "Advertised on topic: " << mPubRawLeft.getInfoTopic());
-  mPubRawLeftGray = image_transport::create_camera_publisher(
-    this, left_raw_gray_topic, mQos.get_rmw_qos_profile());
-  RCLCPP_INFO_STREAM(
-    get_logger(),
-    "Advertised on topic: " << mPubRawLeftGray.getTopic());
-  RCLCPP_INFO_STREAM(
-    get_logger(),
-    "Advertised on topic: " << mPubRawLeftGray.getInfoTopic());
-  mPubRight = image_transport::create_camera_publisher(
-    this, right_topic, mQos.get_rmw_qos_profile());
-  RCLCPP_INFO_STREAM(
-    get_logger(),
-    "Advertised on topic: " << mPubRight.getTopic());
-  RCLCPP_INFO_STREAM(
-    get_logger(),
-    "Advertised on topic: " << mPubRight.getInfoTopic());
-  mPubRightGray = image_transport::create_camera_publisher(
-    this, right_gray_topic, mQos.get_rmw_qos_profile());
-  RCLCPP_INFO_STREAM(
-    get_logger(),
-    "Advertised on topic: " << mPubRightGray.getTopic());
-  RCLCPP_INFO_STREAM(
-    get_logger(),
-    "Advertised on topic: " << mPubRightGray.getInfoTopic());
-  mPubRawRight = image_transport::create_camera_publisher(
-    this, right_raw_topic, mQos.get_rmw_qos_profile());
-  RCLCPP_INFO_STREAM(
-    get_logger(),
-    "Advertised on topic: " << mPubRawRight.getTopic());
-  RCLCPP_INFO_STREAM(
-    get_logger(),
-    "Advertised on topic: " << mPubRawRight.getInfoTopic());
-  mPubRawRightGray = image_transport::create_camera_publisher(
-    this, right_raw_gray_topic, mQos.get_rmw_qos_profile());
-  RCLCPP_INFO_STREAM(
-    get_logger(),
-    "Advertised on topic: " << mPubRawRightGray.getTopic());
-  RCLCPP_INFO_STREAM(
-    get_logger(), "Advertised on topic: " << mPubRawRightGray.getInfoTopic());
+  initVideoDepthPublishers();
 
   if (!mDepthDisabled) {
-    mPubDepth = image_transport::create_camera_publisher(
-      this, depth_topic, mQos.get_rmw_qos_profile());
-    RCLCPP_INFO_STREAM(
-      get_logger(),
-      "Advertised on topic: " << mPubDepth.getTopic());
-    RCLCPP_INFO_STREAM(
-      get_logger(),
-      "Advertised on topic: " << mPubDepth.getInfoTopic());
-    mPubDepthInfo = create_publisher<zed_msgs::msg::DepthInfoStamped>(
-      depth_info_topic, mQos, mPubOpt);
-    RCLCPP_INFO_STREAM(
-      get_logger(), "Advertised on topic: "
-        << mPubDepthInfo->get_topic_name());
-
-    if (mAutoRoiEnabled || mManualRoiEnabled) {
-      mPubRoiMask = image_transport::create_camera_publisher(
-        this, mRoiMaskTopic, mQos.get_rmw_qos_profile());
-      RCLCPP_INFO_STREAM(
-        get_logger(),
-        "Advertised on topic: " << mPubRoiMask.getTopic());
-    }
-  }
-
-  mPubStereo = image_transport::create_publisher(
-    this, stereo_topic,
-    mQos.get_rmw_qos_profile());
-  RCLCPP_INFO_STREAM(
-    get_logger(),
-    "Advertised on topic: " << mPubStereo.getTopic());
-  mPubRawStereo = image_transport::create_publisher(
-    this, stereo_raw_topic,
-    mQos.get_rmw_qos_profile());
-  RCLCPP_INFO_STREAM(
-    get_logger(),
-    "Advertised on topic: " << mPubRawStereo.getTopic());
-  // <---- Camera publishers
-
-  if (!mDepthDisabled) {
-    // ----> Depth publishers
-    mPubConfMap =
-      create_publisher<sensor_msgs::msg::Image>(conf_map_topic, mQos);
-    RCLCPP_INFO_STREAM(
-      get_logger(), "Advertised on topic: " << mPubConfMap->get_topic_name());
-    mPubDisparity = create_publisher<stereo_msgs::msg::DisparityImage>(
-      disparity_topic, mQos, mPubOpt);
-    RCLCPP_INFO_STREAM(
-      get_logger(), "Advertised on topic: "
-        << mPubDisparity->get_topic_name());
-#ifndef FOUND_FOXY
-    mPubCloud = point_cloud_transport::create_publisher(
-      shared_from_this(), pointcloud_topic, mQos.get_rmw_qos_profile(),
-      mPubOpt);
-    RCLCPP_INFO_STREAM(
-      get_logger(),
-      "Advertised on topic: " << mPubCloud.getTopic());
-#else
-    mPubCloud = create_publisher<sensor_msgs::msg::PointCloud2>(
-      pointcloud_topic, mQos, mPubOpt);
-    RCLCPP_INFO_STREAM(
-      get_logger(),
-      "Advertised on topic: " << mPubCloud->get_topic_name());
-#endif
-    // <---- Depth publishers
-
     // ----> Pos Tracking
     mPubPose = create_publisher<geometry_msgs::msg::PoseStamped>(
       mPoseTopic,
@@ -2299,8 +2088,8 @@ void ZedCamera::initPublishers()
 #endif
     }
 
-    std::string marker_topic = "plane_marker";
-    std::string plane_topic = "plane";
+    std::string marker_topic = mTopicRoot + "plane_marker";
+    std::string plane_topic = mTopicRoot + "plane";
     // Rviz markers publisher
     mPubMarker = create_publisher<visualization_msgs::msg::Marker>(
       marker_topic, mQos, mPubOpt);
@@ -2463,6 +2252,12 @@ bool ZedCamera::startCamera()
 {
   RCLCPP_INFO(get_logger(), "=== STARTING CAMERA ===");
 
+  // // CUDA context check
+  // CUcontext * primary_cuda_context;
+  // cuCtxGetCurrent(primary_cuda_context);
+  // int ctx_gpu_id;
+  // cudaGetDevice(&ctx_gpu_id);
+
   // Create a ZED object
   mZed = std::make_shared<sl::Camera>();
 
@@ -2481,6 +2276,15 @@ bool ZedCamera::startCamera()
   // <---- TF2 Transform
 
   // ----> ZED configuration
+
+  // if (primary_cuda_context) {
+  //   mInitParams.sdk_cuda_ctx = *primary_cuda_context;
+  // } else {
+  //   RCLCPP_INFO(
+  //     get_logger(),
+  //     "No ready CUDA context found, using default ZED SDK context.");
+  // }
+
   if (mSimMode) {  // Simulation?
     RCLCPP_INFO_STREAM(
       get_logger(), "=== CONNECTING TO THE SIMULATION SERVER ["
@@ -2536,6 +2340,13 @@ bool ZedCamera::startCamera()
   mInitParams.async_grab_camera_recovery =
     true;    // Camera recovery is handled asynchronously to provide information
              // about this status
+
+  // Set the maximum working resolution between video and point cloud to boost the pipeline processing
+  if (mMatResol.width > mPcResol.width) {
+    mInitParams.maximum_working_resolution = mMatResol;
+  } else {
+    mInitParams.maximum_working_resolution = mPcResol;
+  }
   // <---- ZED configuration
 
   // ----> Try to connect to a camera, to a stream, or to load an SVO
@@ -3192,13 +3003,10 @@ bool ZedCamera::startCamera()
   // <----> Check default camera settings
 
   // ----> Camera Info messages
-  mRgbCamInfoMsg = std::make_shared<sensor_msgs::msg::CameraInfo>();
-  mRgbCamInfoRawMsg = std::make_shared<sensor_msgs::msg::CameraInfo>();
   mLeftCamInfoMsg = std::make_shared<sensor_msgs::msg::CameraInfo>();
   mLeftCamInfoRawMsg = std::make_shared<sensor_msgs::msg::CameraInfo>();
   mRightCamInfoMsg = std::make_shared<sensor_msgs::msg::CameraInfo>();
   mRightCamInfoRawMsg = std::make_shared<sensor_msgs::msg::CameraInfo>();
-  mDepthCamInfoMsg = std::make_shared<sensor_msgs::msg::CameraInfo>();
 
   setTFCoordFrameNames();  // Requires mZedRealCamModel available only after
                            // camera opening
@@ -3209,9 +3017,6 @@ bool ZedCamera::startCamera()
   fillCamInfo(
     mZed, mLeftCamInfoRawMsg, mRightCamInfoRawMsg, mLeftCamOptFrameId,
     mRightCamOptFrameId, true);
-  mRgbCamInfoMsg = mLeftCamInfoMsg;
-  mRgbCamInfoRawMsg = mLeftCamInfoRawMsg;
-  mDepthCamInfoMsg = mLeftCamInfoMsg;
   // <---- Camera Info messages
 
   initPublishers();  // Requires mZedRealCamModel available only after camera
@@ -4260,9 +4065,9 @@ void ZedCamera::publishImuFrameAndTopic()
   try {
     mPubCamImuTransf->publish(std::move(cameraImuTransfMgs));
   } catch (std::system_error & e) {
-    DEBUG_STREAM_COMM("Message publishing ecception: " << e.what());
+    DEBUG_STREAM_COMM("Message publishing exception: " << e.what());
   } catch (...) {
-    DEBUG_STREAM_COMM("Message publishing generic ecception: ");
+    DEBUG_STREAM_COMM("Message publishing generic exception: ");
   }
 
   // Publish IMU TF as static TF
@@ -4406,7 +4211,7 @@ void ZedCamera::threadFunc_zedGrab()
   #ifdef USE_SVO_REALTIME_PAUSE
           // Lock on Positional Tracking mutex to avoid race conditions
           std::lock_guard<std::mutex> lock(mPtMutex);
-          
+
           // Dummy grab
           mZed->grab();
   #endif
@@ -4944,7 +4749,7 @@ bool ZedCamera::publishSensorsData(rclcpp::Time force_ts)
 
       auto imuMsg = std::make_unique<sensor_msgs::msg::Imu>();
 
-      imuMsg->header.stamp = ts_imu;
+      imuMsg->header.stamp = mUsePubTimestamps ? get_clock()->now() : ts_imu;
       imuMsg->header.frame_id = mImuFrameId;
 
       imuMsg->orientation.x = sens_data.imu.pose.getOrientation()[0];
@@ -5004,9 +4809,9 @@ bool ZedCamera::publishSensorsData(rclcpp::Time force_ts)
       try {
         mPubImu->publish(std::move(imuMsg));
       } catch (std::system_error & e) {
-        DEBUG_STREAM_COMM("Message publishing ecception: " << e.what());
+        DEBUG_STREAM_COMM("Message publishing exception: " << e.what());
       } catch (...) {
-        DEBUG_STREAM_COMM("Message publishing generic ecception: ");
+        DEBUG_STREAM_COMM("Message publishing generic exception: ");
       }
     } else {
       mImuPublishing = false;
@@ -5017,7 +4822,7 @@ bool ZedCamera::publishSensorsData(rclcpp::Time force_ts)
 
       auto imuRawMsg = std::make_unique<sensor_msgs::msg::Imu>();
 
-      imuRawMsg->header.stamp = ts_imu;
+      imuRawMsg->header.stamp = mUsePubTimestamps ? get_clock()->now() : ts_imu;
       imuRawMsg->header.frame_id = mImuFrameId;
 
       imuRawMsg->angular_velocity.x =
@@ -5068,9 +4873,9 @@ bool ZedCamera::publishSensorsData(rclcpp::Time force_ts)
       try {
         mPubImuRaw->publish(std::move(imuRawMsg));
       } catch (std::system_error & e) {
-        DEBUG_STREAM_COMM("Message publishing ecception: " << e.what());
+        DEBUG_STREAM_COMM("Message publishing exception: " << e.what());
       } catch (...) {
-        DEBUG_STREAM_COMM("Message publishing generic ecception: ");
+        DEBUG_STREAM_COMM("Message publishing generic exception: ");
       }
     }
   }
@@ -5081,7 +4886,7 @@ bool ZedCamera::publishSensorsData(rclcpp::Time force_ts)
 
       auto pressMsg = std::make_unique<sensor_msgs::msg::FluidPressure>();
 
-      pressMsg->header.stamp = ts_baro;
+      pressMsg->header.stamp = mUsePubTimestamps ? get_clock()->now() : ts_baro;
       pressMsg->header.frame_id = mBaroFrameId;
       pressMsg->fluid_pressure =
         sens_data.barometer.pressure;    // Pascals -> see
@@ -5092,9 +4897,9 @@ bool ZedCamera::publishSensorsData(rclcpp::Time force_ts)
       try {
         mPubPressure->publish(std::move(pressMsg));
       } catch (std::system_error & e) {
-        DEBUG_STREAM_COMM("Message publishing ecception: " << e.what());
+        DEBUG_STREAM_COMM("Message publishing exception: " << e.what());
       } catch (...) {
-        DEBUG_STREAM_COMM("Message publishing generic ecception: ");
+        DEBUG_STREAM_COMM("Message publishing generic exception: ");
       }
     } else {
       mBaroPublishing = false;
@@ -5107,7 +4912,7 @@ bool ZedCamera::publishSensorsData(rclcpp::Time force_ts)
 
       auto magMsg = std::make_unique<sensor_msgs::msg::MagneticField>();
 
-      magMsg->header.stamp = ts_mag;
+      magMsg->header.stamp = mUsePubTimestamps ? get_clock()->now() : ts_mag;
       magMsg->header.frame_id = mMagFrameId;
       magMsg->magnetic_field.x =
         sens_data.magnetometer.magnetic_field_calibrated.x * 1e-6;    // Tesla
@@ -5129,9 +4934,9 @@ bool ZedCamera::publishSensorsData(rclcpp::Time force_ts)
       try {
         mPubImuMag->publish(std::move(magMsg));
       } catch (std::system_error & e) {
-        DEBUG_STREAM_COMM("Message publishing ecception: " << e.what());
+        DEBUG_STREAM_COMM("Message publishing exception: " << e.what());
       } catch (...) {
-        DEBUG_STREAM_COMM("Message publishing generic ecception: ");
+        DEBUG_STREAM_COMM("Message publishing generic exception: ");
       }
     } else {
       mMagPublishing = false;
@@ -5193,7 +4998,9 @@ void ZedCamera::publishOdomTF(rclcpp::Time t)
 
   geometry_msgs::msg::TransformStamped transformStamped;
 
-  transformStamped.header.stamp = t + rclcpp::Duration(0, mTfOffset * 1e9);
+  transformStamped.header.stamp =
+    mUsePubTimestamps ? get_clock()->now() :
+    (t + rclcpp::Duration(0, mTfOffset * 1e9));
 
   // RCLCPP_INFO_STREAM(get_logger(), "Odom TS: " <<
   // transformStamped.header.stamp);
@@ -5245,7 +5052,9 @@ void ZedCamera::publishPoseTF(rclcpp::Time t)
 
   geometry_msgs::msg::TransformStamped transformStamped;
 
-  transformStamped.header.stamp = t + rclcpp::Duration(0, mTfOffset * 1e9);
+  transformStamped.header.stamp =
+    mUsePubTimestamps ? get_clock()->now() :
+    (t + rclcpp::Duration(0, mTfOffset * 1e9));
   transformStamped.header.frame_id = mMapFrameId;
   transformStamped.child_frame_id = mOdomFrameId;
   // conversion from Tranform to message
@@ -5553,7 +5362,7 @@ void ZedCamera::publishOdom(
   if (odomSub) {
     auto odomMsg = std::make_unique<nav_msgs::msg::Odometry>();
 
-    odomMsg->header.stamp = t;
+    odomMsg->header.stamp = mUsePubTimestamps ? get_clock()->now() : t;
     odomMsg->header.frame_id = mOdomFrameId;  // frame
     odomMsg->child_frame_id = mBaseFrameId;   // camera_frame
 
@@ -5588,9 +5397,9 @@ void ZedCamera::publishOdom(
     try {
       mPubOdom->publish(std::move(odomMsg));
     } catch (std::system_error & e) {
-      DEBUG_STREAM_COMM("Message publishing ecception: " << e.what());
+      DEBUG_STREAM_COMM("Message publishing exception: " << e.what());
     } catch (...) {
-      DEBUG_STREAM_COMM("Message publishing generic ecception: ");
+      DEBUG_STREAM_COMM("Message publishing generic exception: ");
     }
   }
 }
@@ -5723,9 +5532,9 @@ void ZedCamera::publishPoseStatus()
     try {
       mPubPoseStatus->publish(std::move(msg));
     } catch (std::system_error & e) {
-      DEBUG_STREAM_COMM("Message publishing ecception: " << e.what());
+      DEBUG_STREAM_COMM("Message publishing exception: " << e.what());
     } catch (...) {
-      DEBUG_STREAM_COMM("Message publishing generic ecception: ");
+      DEBUG_STREAM_COMM("Message publishing generic exception: ");
     }
   }
 }
@@ -5751,9 +5560,9 @@ void ZedCamera::publishGnssPoseStatus()
     try {
       mPubGnssPoseStatus->publish(std::move(msg));
     } catch (std::system_error & e) {
-      DEBUG_STREAM_COMM("Message publishing ecception: " << e.what());
+      DEBUG_STREAM_COMM("Message publishing exception: " << e.what());
     } catch (...) {
-      DEBUG_STREAM_COMM("Message publishing generic ecception: ");
+      DEBUG_STREAM_COMM("Message publishing generic exception: ");
     }
   }
 }
@@ -5780,9 +5589,9 @@ void ZedCamera::publishGeoPoseStatus()
     try {
       mPubGeoPoseStatus->publish(std::move(msg));
     } catch (std::system_error & e) {
-      DEBUG_STREAM_COMM("Message publishing ecception: " << e.what());
+      DEBUG_STREAM_COMM("Message publishing exception: " << e.what());
     } catch (...) {
-      DEBUG_STREAM_COMM("Message publishing generic ecception: ");
+      DEBUG_STREAM_COMM("Message publishing generic exception: ");
     }
   }
 }
@@ -5807,7 +5616,7 @@ void ZedCamera::publishPose()
   base_pose = mMap2BaseTransf;
 
   std_msgs::msg::Header header;
-  header.stamp = mFrameTimestamp;
+  header.stamp = mUsePubTimestamps ? get_clock()->now() : mFrameTimestamp;
   header.frame_id = mMapFrameId;   // frame
 
   geometry_msgs::msg::Pose pose;
@@ -5832,9 +5641,9 @@ void ZedCamera::publishPose()
     try {
       mPubPose->publish(std::move(poseNoCov));
     } catch (std::system_error & e) {
-      DEBUG_STREAM_COMM("Message publishing ecception: " << e.what());
+      DEBUG_STREAM_COMM("Message publishing exception: " << e.what());
     } catch (...) {
-      DEBUG_STREAM_COMM("Message publishing generic ecception: ");
+      DEBUG_STREAM_COMM("Message publishing generic exception: ");
     }
   }
 
@@ -5866,9 +5675,9 @@ void ZedCamera::publishPose()
       try {
         mPubPoseCov->publish(std::move(poseCov));
       } catch (std::system_error & e) {
-        DEBUG_STREAM_COMM("Message publishing ecception: " << e.what());
+        DEBUG_STREAM_COMM("Message publishing exception: " << e.what());
       } catch (...) {
-        DEBUG_STREAM_COMM("Message publishing generic ecception: ");
+        DEBUG_STREAM_COMM("Message publishing generic exception: ");
       }
     }
   }
@@ -6010,7 +5819,9 @@ void ZedCamera::processGeoPose()
     geometry_msgs::msg::TransformStamped transformStamped;
 
     transformStamped.header.stamp =
-      mFrameTimestamp + rclcpp::Duration(0, mTfOffset * 1e9);
+      mUsePubTimestamps ?
+      get_clock()->now() :
+      (mFrameTimestamp + rclcpp::Duration(0, mTfOffset * 1e9));
     transformStamped.header.frame_id = mUtmAsParent ? mUtmFrameId : mMapFrameId;
     transformStamped.child_frame_id = mUtmAsParent ? mMapFrameId : mUtmFrameId;
 
@@ -6048,7 +5859,8 @@ void ZedCamera::publishGnssPose()
   if (gnssSub > 0) {
     auto msg = std::make_unique<nav_msgs::msg::Odometry>();
 
-    msg->header.stamp = mFrameTimestamp;
+    msg->header.stamp =
+      mUsePubTimestamps ? get_clock()->now() : mFrameTimestamp;
     msg->header.frame_id = mMapFrameId;
     msg->child_frame_id = mBaseFrameId;
 
@@ -6083,16 +5895,17 @@ void ZedCamera::publishGnssPose()
     try {
       mPubGnssPose->publish(std::move(msg));
     } catch (std::system_error & e) {
-      DEBUG_STREAM_COMM("Message publishing ecception: " << e.what());
+      DEBUG_STREAM_COMM("Message publishing exception: " << e.what());
     } catch (...) {
-      DEBUG_STREAM_COMM("Message publishing generic ecception: ");
+      DEBUG_STREAM_COMM("Message publishing generic exception: ");
     }
   }
 
   if (geoPoseSub > 0) {
     auto msg = std::make_unique<geographic_msgs::msg::GeoPoseStamped>();
 
-    msg->header.stamp = mFrameTimestamp;
+    msg->header.stamp =
+      mUsePubTimestamps ? get_clock()->now() : mFrameTimestamp;
     msg->header.frame_id = mMapFrameId;
 
     // Latest Lat Long data
@@ -6111,16 +5924,18 @@ void ZedCamera::publishGnssPose()
     try {
       mPubGeoPose->publish(std::move(msg));
     } catch (std::system_error & e) {
-      DEBUG_STREAM_COMM("Message publishing ecception: " << e.what());
+      DEBUG_STREAM_COMM("Message publishing exception: " << e.what());
     } catch (...) {
-      DEBUG_STREAM_COMM("Message publishing generic ecception: ");
+      DEBUG_STREAM_COMM("Message publishing generic exception: ");
     }
   }
 
   if (fusedFixSub > 0) {
     auto msg = std::make_unique<sensor_msgs::msg::NavSatFix>();
 
-    msg->header.stamp = mFrameTimestamp;
+    msg->header.stamp =
+      mUsePubTimestamps ? get_clock()->now() :
+      mFrameTimestamp;
     msg->header.frame_id = mMapFrameId;
 
     msg->status.status = sensor_msgs::msg::NavSatStatus::STATUS_SBAS_FIX;
@@ -6154,17 +5969,20 @@ void ZedCamera::publishGnssPose()
     try {
       mPubFusedFix->publish(std::move(msg));
     } catch (std::system_error & e) {
-      DEBUG_STREAM_COMM("Message publishing ecception: " << e.what());
+      DEBUG_STREAM_COMM("Message publishing exception: " << e.what());
     } catch (...) {
-      DEBUG_STREAM_COMM("Message publishing generic ecception: ");
+      DEBUG_STREAM_COMM("Message publishing generic exception: ");
     }
   }
 
   if (originFixSub > 0) {
     auto msg = std::make_unique<sensor_msgs::msg::NavSatFix>();
 
-    msg->header.stamp = mFrameTimestamp;
-    msg->header.frame_id = mGnssOriginFrameId;
+    msg->header.stamp = mUsePubTimestamps ?
+      get_clock()->now() :
+      mFrameTimestamp;
+    msg->header.frame_id =
+      mGnssOriginFrameId;
 
     msg->status.status = sensor_msgs::msg::NavSatStatus::STATUS_SBAS_FIX;
     msg->status.service = mGnssService;
@@ -6185,9 +6003,9 @@ void ZedCamera::publishGnssPose()
     try {
       mPubOriginFix->publish(std::move(msg));
     } catch (std::system_error & e) {
-      DEBUG_STREAM_COMM("Message publishing ecception: " << e.what());
+      DEBUG_STREAM_COMM("Message publishing exception: " << e.what());
     } catch (...) {
-      DEBUG_STREAM_COMM("Message publishing generic ecception: ");
+      DEBUG_STREAM_COMM("Message publishing generic exception: ");
     }
   }
 }
@@ -6387,9 +6205,9 @@ void ZedCamera::callback_pubTemp()
     try {
       mPubTempL->publish(std::move(leftTempMsg));
     } catch (std::system_error & e) {
-      DEBUG_STREAM_COMM("Message publishing ecception: " << e.what());
+      DEBUG_STREAM_COMM("Message publishing exception: " << e.what());
     } catch (...) {
-      DEBUG_STREAM_COMM("Message publishing generic ecception: ");
+      DEBUG_STREAM_COMM("Message publishing generic exception: ");
     }
   }
 
@@ -6406,9 +6224,9 @@ void ZedCamera::callback_pubTemp()
     try {
       mPubTempR->publish(std::move(rightTempMsg));
     } catch (std::system_error & e) {
-      DEBUG_STREAM_COMM("Message publishing ecception: " << e.what());
+      DEBUG_STREAM_COMM("Message publishing exception: " << e.what());
     } catch (...) {
-      DEBUG_STREAM_COMM("Message publishing generic ecception: ");
+      DEBUG_STREAM_COMM("Message publishing generic exception: ");
     }
   }
 
@@ -6425,9 +6243,9 @@ void ZedCamera::callback_pubTemp()
     try {
       mPubImuTemp->publish(std::move(imuTempMsg));
     } catch (std::system_error & e) {
-      DEBUG_STREAM_COMM("Message publishing ecception: " << e.what());
+      DEBUG_STREAM_COMM("Message publishing exception: " << e.what());
     } catch (...) {
-      DEBUG_STREAM_COMM("Message publishing generic ecception: ");
+      DEBUG_STREAM_COMM("Message publishing generic exception: ");
     }
   }
 }
@@ -6514,16 +6332,18 @@ void ZedCamera::callback_pubFusedPc()
         memcpy(ptCloudPtr, cloud_pts, 4 * chunkSize * sizeof(float));
         ptCloudPtr += 4 * chunkSize;
         if (mSvoMode) {
-          pointcloudFusedMsg->header.stamp = mFrameTimestamp;
+          pointcloudFusedMsg->header.stamp =
+            mUsePubTimestamps ? get_clock()->now() : mFrameTimestamp;
         } else if (mSimMode) {
           if (mUseSimTime) {
-            pointcloudFusedMsg->header.stamp = mFrameTimestamp;
-          } else {
             pointcloudFusedMsg->header.stamp =
+              mUsePubTimestamps ? get_clock()->now() : mFrameTimestamp;
+          } else {
+            pointcloudFusedMsg->header.stamp = mUsePubTimestamps ? get_clock()->now() :
               sl_tools::slTime2Ros(mFusedPC.chunks[c].timestamp);
           }
         } else {
-          pointcloudFusedMsg->header.stamp =
+          pointcloudFusedMsg->header.stamp = mUsePubTimestamps ? get_clock()->now() :
             sl_tools::slTime2Ros(mFusedPC.chunks[c].timestamp);
         }
       }
@@ -6543,17 +6363,17 @@ void ZedCamera::callback_pubFusedPc()
   try {
     mPubFusedCloud.publish(std::move(pointcloudFusedMsg));
   } catch (std::system_error & e) {
-    DEBUG_STREAM_COMM("Message publishing ecception: " << e.what());
+    DEBUG_STREAM_COMM("Message publishing exception: " << e.what());
   } catch (...) {
-    DEBUG_STREAM_COMM("Message publishing generic ecception: ");
+    DEBUG_STREAM_COMM("Message publishing generic exception: ");
   }
 #else
   try {
     mPubFusedCloud->publish(std::move(pointcloudFusedMsg));
   } catch (std::system_error & e) {
-    DEBUG_STREAM_COMM("Message publishing ecception: " << e.what());
+    DEBUG_STREAM_COMM("Message publishing exception: " << e.what());
   } catch (...) {
-    DEBUG_STREAM_COMM("Message publishing generic ecception: ");
+    DEBUG_STREAM_COMM("Message publishing generic exception: ");
   }
 #endif
 }
@@ -6636,32 +6456,36 @@ void ZedCamera::callback_pubPaths()
   if (mapPathSub > 0) {
     auto mapPathMsg = std::make_unique<nav_msgs::msg::Path>();
     mapPathMsg->header.frame_id = mMapFrameId;
-    mapPathMsg->header.stamp = mFrameTimestamp;
+    mapPathMsg->header.stamp =
+      mUsePubTimestamps ? get_clock()->now() :
+      mFrameTimestamp;
     mapPathMsg->poses = mPosePath;
 
     DEBUG_STREAM_PT("Publishing MAP PATH message");
     try {
       mPubPosePath->publish(std::move(mapPathMsg));
     } catch (std::system_error & e) {
-      DEBUG_STREAM_COMM("Message publishing ecception: " << e.what());
+      DEBUG_STREAM_COMM("Message publishing exception: " << e.what());
     } catch (...) {
-      DEBUG_STREAM_COMM("Message publishing generic ecception: ");
+      DEBUG_STREAM_COMM("Message publishing generic exception: ");
     }
   }
 
   if (odomPathSub > 0) {
     auto odomPathMsg = std::make_unique<nav_msgs::msg::Path>();
     odomPathMsg->header.frame_id = mOdomFrameId;
-    odomPathMsg->header.stamp = mFrameTimestamp;
+    odomPathMsg->header.stamp =
+      mUsePubTimestamps ? get_clock()->now() :
+      mFrameTimestamp;
     odomPathMsg->poses = mOdomPath;
 
     DEBUG_STREAM_PT("Publishing ODOM PATH message");
     try {
       mPubOdomPath->publish(std::move(odomPathMsg));
     } catch (std::system_error & e) {
-      DEBUG_STREAM_COMM("Message publishing ecception: " << e.what());
+      DEBUG_STREAM_COMM("Message publishing exception: " << e.what());
     } catch (...) {
-      DEBUG_STREAM_COMM("Message publishing generic ecception: ");
+      DEBUG_STREAM_COMM("Message publishing generic exception: ");
     }
   }
 }
@@ -7999,7 +7823,7 @@ void ZedCamera::callback_clickedPoint(
     static int hit_pt_id =
       0;      // This ID must be unique in the same process. Thus it is good to
               // keep it as a static variable
-    pt_marker->header.stamp = ts;
+    pt_marker->header.stamp = mUsePubTimestamps ? get_clock()->now() : ts;
     // Set the marker action.  Options are ADD and DELETE
     pt_marker->action = visualization_msgs::msg::Marker::ADD;
     pt_marker->lifetime = rclcpp::Duration(0, 0);
@@ -8041,9 +7865,9 @@ void ZedCamera::callback_clickedPoint(
     try {
       mPubMarker->publish(std::move(pt_marker));
     } catch (std::system_error & e) {
-      DEBUG_STREAM_COMM("Message publishing ecception: " << e.what());
+      DEBUG_STREAM_COMM("Message publishing exception: " << e.what());
     } catch (...) {
-      DEBUG_STREAM_COMM("Message publishing generic ecception: ");
+      DEBUG_STREAM_COMM("Message publishing generic exception: ");
     }
     // ----> Publish a blue sphere in the clicked point
 
@@ -8054,7 +7878,7 @@ void ZedCamera::callback_clickedPoint(
     static int plane_mesh_id =
       0;      // This ID must be unique in the same process. Thus it is good to
               // keep it as a static variable
-    plane_marker->header.stamp = ts;
+    plane_marker->header.stamp = mUsePubTimestamps ? get_clock()->now() : ts;
     // Set the marker action.  Options are ADD and DELETE
     plane_marker->action = visualization_msgs::msg::Marker::ADD;
     plane_marker->lifetime = rclcpp::Duration(0, 0);
@@ -8112,9 +7936,9 @@ void ZedCamera::callback_clickedPoint(
     try {
       mPubMarker->publish(std::move(plane_marker));
     } catch (std::system_error & e) {
-      DEBUG_STREAM_COMM("Message publishing ecception: " << e.what());
+      DEBUG_STREAM_COMM("Message publishing exception: " << e.what());
     } catch (...) {
-      DEBUG_STREAM_COMM("Message publishing generic ecception: ");
+      DEBUG_STREAM_COMM("Message publishing generic exception: ");
     }
     // <---- Publish the plane as green mesh
   }
@@ -8123,7 +7947,7 @@ void ZedCamera::callback_clickedPoint(
     // ----> Publish the plane as custom message
 
     auto planeMsg = std::make_unique<zed_msgs::msg::PlaneStamped>();
-    planeMsg->header.stamp = ts;
+    planeMsg->header.stamp = mUsePubTimestamps ? get_clock()->now() : ts;
     planeMsg->header.frame_id = mLeftCamFrameId;
 
     // Plane equation
@@ -8196,9 +8020,9 @@ void ZedCamera::callback_clickedPoint(
     try {
       mPubPlane->publish(std::move(planeMsg));
     } catch (std::system_error & e) {
-      DEBUG_STREAM_COMM("Message publishing ecception: " << e.what());
+      DEBUG_STREAM_COMM("Message publishing exception: " << e.what());
     } catch (...) {
-      DEBUG_STREAM_COMM("Message publishing generic ecception: ");
+      DEBUG_STREAM_COMM("Message publishing generic exception: ");
     }
     // <---- Publish the plane as custom message
   }
@@ -8285,12 +8109,33 @@ void ZedCamera::callback_setRoi(
 
       mManualRoiEnabled = false;
 
-      if (mPubRoiMask.getTopic().empty()) {
-        mPubRoiMask = image_transport::create_camera_publisher(
-          this, mRoiMaskTopic, mQos.get_rmw_qos_profile());
-        RCLCPP_INFO_STREAM(
-          get_logger(),
-          "Advertised on topic: " << mPubRoiMask.getTopic());
+
+      if (_nitrosDisabled) {
+        if (mPubRoiMask.getTopic().empty()) {
+          mPubRoiMask = image_transport::create_publisher(
+            this, mRoiMaskTopic, mQos.get_rmw_qos_profile());
+          RCLCPP_INFO_STREAM(
+            get_logger(), "Advertised on topic: "
+              << mPubRoiMask.getTopic());
+        }
+      } else {
+#ifdef FOUND_ISAAC_ROS_NITROS
+        if (!mNitrosPubRoiMask) {
+          mNitrosPubRoiMask = std::make_shared<
+            nvidia::isaac_ros::nitros::ManagedNitrosPublisher<
+              nvidia::isaac_ros::nitros::NitrosImage>>(
+            this, mRoiMaskTopic,
+            nvidia::isaac_ros::nitros::nitros_image_bgra8_t::
+            supported_type_name,
+            nvidia::isaac_ros::nitros::NitrosDiagnosticsConfig(), mQos);
+          RCLCPP_INFO_STREAM(
+            get_logger(),
+            "Advertised on topic: " << mRoiMaskTopic);
+          RCLCPP_INFO_STREAM(
+            get_logger(), "Advertised on topic: "
+              << mRoiMaskTopic + "/nitros");
+        }
+#endif
       }
 
       res->message = err_msg;
@@ -8495,7 +8340,13 @@ void ZedCamera::processRtRoi(rclcpp::Time ts)
     uint8_t subCount = 0;
 
     try {
-      subCount = mPubRoiMask.getNumSubscribers();
+      if (_nitrosDisabled) {
+        subCount = mPubRoiMask.getNumSubscribers();
+      } else {
+#ifdef FOUND_ISAAC_ROS_NITROS
+        subCount = count_subscribers(mRoiMaskTopic);
+#endif
+      }
     } catch (...) {
       rcutils_reset_error();
       DEBUG_STREAM_COMM("processRtRoi: Exception while counting subscribers");
@@ -8508,9 +8359,18 @@ void ZedCamera::processRtRoi(rclcpp::Time ts)
       mZed->getRegionOfInterest(roi_mask);
 
       DEBUG_ROI("Publish ROI Mask");
-      publishImageWithInfo(
-        roi_mask, mPubRoiMask, mLeftCamInfoMsg,
-        mLeftCamOptFrameId, ts);
+
+      if (_nitrosDisabled) {
+        publishImageWithInfo(
+          roi_mask, mPubRoiMask, mPubRoiMaskCamInfo, mLeftCamInfoMsg,
+          mLeftCamOptFrameId, ts);
+      } else {
+#ifdef FOUND_ISAAC_ROS_NITROS
+        publishImageWithInfo(
+          roi_mask, mNitrosPubRoiMask, mPubRoiMaskCamInfo, mLeftCamInfoMsg,
+          mLeftCamOptFrameId, ts);
+#endif
+      }
     }
   }
 }
@@ -8581,7 +8441,9 @@ void ZedCamera::publishHealthStatus()
 
   sl::HealthStatus status = mZed->getHealthStatus();
   auto msg = std::make_unique<zed_msgs::msg::HealthStatusStamped>();
-  msg->header.stamp = mFrameTimestamp;
+  msg->header.stamp = mUsePubTimestamps ?
+    get_clock()->now() :
+    mFrameTimestamp;
   msg->header.frame_id = mBaseFrameId;
   msg->serial_number = mCamSerialNumber;
   msg->camera_name = mCameraName;
