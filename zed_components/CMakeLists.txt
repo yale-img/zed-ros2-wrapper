@@ -15,7 +15,7 @@ if(DEFINED ENV{ROS_DISTRO})
     #message("* Found ROS2 ${FOUND_ROS2_DISTRO}")
 else()
     message("* ROS2 distro variable not set. Trying to figure it out...")
-    set(ROS2_DISTROS "ardent;crystal;dashing;eloquent;foxy;galactic;humble;jazzy;rolling")
+    set(ROS2_DISTROS "ardent;bouncy;crystal;dashing;eloquent;foxy;galactic;humble;iron;jazzy;kilted;rolling")
     set(ROS2_FOUND FALSE)
     foreach(distro ${ROS2_DISTROS})
         if(NOT ROS2_FOUND)
@@ -135,8 +135,6 @@ find_package(nmea_msgs REQUIRED)
 find_package(geographic_msgs REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(stereo_msgs REQUIRED)
-find_package(backward_ros REQUIRED)
-
 find_package(image_transport REQUIRED)
 find_package(std_srvs REQUIRED)
 find_package(diagnostic_msgs REQUIRED)
@@ -145,9 +143,12 @@ find_package(visualization_msgs REQUIRED)
 find_package(shape_msgs REQUIRED)
 find_package(robot_localization REQUIRED)
 
+# Debug
+find_package(backward_ros REQUIRED)
+
 # Check ISAAC ROS Nitros availability
 find_package(isaac_ros_common QUIET)
-if(isaac_ros_common_FOUND)  
+if(isaac_ros_common_FOUND)
   find_package(isaac_ros_nitros)
   if(isaac_ros_nitros_FOUND)
       find_package(isaac_ros_managed_nitros QUIET)
@@ -169,13 +170,16 @@ if(isaac_ros_common_FOUND)
   else()
     message(WARNING " * 'isaac_ros_nitros' not found, ISAAC ROS NITROS transport will not be available.")
   endif()
-else()
-  message(" * 'isaac_ros_common' not found, ISAAC ROS NITROS transport will not be available.")
+#else()
+#  message(" * 'isaac_ros_common' not found, ISAAC ROS NITROS transport will not be available.")
 endif()
 
-if(NOT ${FOUND_ROS2_DISTRO} STREQUAL "foxy")
-  find_package(point_cloud_transport REQUIRED)
+# Check Point Cloud Transport availability
+find_package(point_cloud_transport QUIET)
+if(point_cloud_transport_FOUND)
   list(APPEND DEPENDENCIES point_cloud_transport)
+  message(" * Point Cloud Transport is available")
+  add_definitions(-DFOUND_POINT_CLOUD_TRANSPORT)
 endif()
 
 if(BUILD_TESTING)
@@ -186,7 +190,7 @@ endif()
 ###############################################################################
 #Add all files in subdirectories of the project in
 # a dummy_target so qtcreator have access to all files
-file(GLOB_RECURSE all_files ${CMAKE_SOURCE_DIR}/*)
+file(GLOB_RECURSE all_files ${CMAKE_CURRENT_SOURCE_DIR}/*)
 add_custom_target(all_${PROJECT_NAME}_files SOURCES ${all_files})
 
 ###############################################################################
@@ -224,6 +228,7 @@ set(SL_TOOLS_SRC
 
 set(ZED_CAMERA_INC
     ${CMAKE_CURRENT_SOURCE_DIR}/src/include/visibility_control.hpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/include/sl_version.hpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/zed_camera/include/zed_camera_component.hpp
 )
 
@@ -236,11 +241,14 @@ set(ZED_CAMERA_SRC
 
 set(ZED_CAMERA_ONE_INC
     ${CMAKE_CURRENT_SOURCE_DIR}/src/include/visibility_control.hpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/zed_camera/include/zed_camera_one_component.hpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/include/sl_version.hpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/zed_camera_one/include/zed_camera_one_component.hpp
 )
 
 set(ZED_CAMERA_ONE_SRC
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/zed_camera/src/zed_camera_one_component.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/zed_camera_one/src/zed_camera_one_component_main.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/zed_camera_one/src/zed_camera_one_component_sensors.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/zed_camera_one/src/zed_camera_one_component_video.cpp
 )
 ###############################################################################
 # Bin and Install
@@ -283,7 +291,7 @@ target_include_directories(zed_camera_one_component PUBLIC
     ${CUDA_INCLUDE_DIRS}
     ${ZED_INCLUDE_DIRS}
     ${CMAKE_CURRENT_SOURCE_DIR}/src/include
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/zed_camera/include
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/zed_camera_one/include
     ${CMAKE_CURRENT_SOURCE_DIR}/src/tools/include
 )
 target_compile_definitions(zed_camera_one_component
@@ -309,6 +317,7 @@ install(TARGETS zed_camera_component zed_camera_one_component
 # Install header files
 install(DIRECTORY
     ${CMAKE_CURRENT_SOURCE_DIR}/src/zed_camera/include/
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/zed_camera_one/include/
     ${CMAKE_CURRENT_SOURCE_DIR}/src/tools/include/
     ${CMAKE_CURRENT_SOURCE_DIR}/src/include/
     DESTINATION include/${PROJECT_NAME}/
